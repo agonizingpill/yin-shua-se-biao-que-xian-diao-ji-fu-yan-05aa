@@ -32,6 +32,8 @@ class ProofSheet(Base):
     classification_state:Mapped[str]=mapped_column(String(20),default='unmeasured')
     classified_at:Mapped[str|None]=mapped_column(String(40),nullable=True)
     evidence:Mapped[dict|None]=mapped_column(JSON,nullable=True)
+    # 拒判补采承接链外键：原张与同链补采张均挂链；原张证据保留且不能顶替
+    chain_id:Mapped[int|None]=mapped_column(ForeignKey('resample_chains.id'),nullable=True)
 class Adjustment(Base):
     __tablename__='adjustments'
     id:Mapped[int]=mapped_column(primary_key=True)

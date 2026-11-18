@@ -2,17 +2,27 @@ from sqlalchemy import select,func
 from fastapi import HTTPException
 from .models import PrintJob,ProofSheet
 from .production_models import PressSample,PressHold
+from .resample_models import ResampleChain
 from .dispatch_models import PrintPack,PrintShipment,ShipmentPack
 from .paper_service import locked,net_paper
 from .services import audit
 
 def gate(s,j):
+    from . import resample_service
+    resample_service.guard(s,j.id)
     if j.status!='production' or s.scalar(select(PressHold.id).where(PressHold.job_id==j.id,PressHold.state=='active')):raise HTTPException(409,'须无活动停机单的量产工单')
     if s.scalar(select(PressSample.id).where(PressSample.job_id==j.id,PressSample.state=='classifying')):raise HTTPException(409,'抽检待判读，不能封箱或发货')
+    if s.scalar(select(PressSample.id).where(PressSample.job_id==j.id,PressSample.state=='waiting_resample')):raise HTTPException(409,'存在拒判待补采抽检，承接链有效判读前不能封箱发货')
     sample=s.scalar(select(PressSample).where(PressSample.job_id==j.id,PressSample.state=='passed').order_by(PressSample.sequence.desc()))
     if not sample:raise HTTPException(409,'须有合格量产抽检才可装箱发货')
     proof=s.get(ProofSheet,sample.proof_id)
-    return {'sample_id':sample.id,'sequence':sample.sequence,'quantity':sample.quantity,'proof_code':proof.code,'plate':sample.plate_snapshot,'net_paper':net_paper(s,j.id)}
+    # 封箱发货跟随有效承接链：原张若拒判，质量依据以承接链有效补采张为准，原证据保留
+    chain=s.scalar(select(ResampleChain).where(ResampleChain.sample_id==sample.id,ResampleChain.state=='resolved').order_by(ResampleChain.id.desc()))
+    effective_code=proof.code;chain_code=None
+    if chain and chain.effective_proof_id:
+        cp=s.get(ProofSheet,chain.effective_proof_id)
+        if cp and cp.classification_state=='classified' and cp.pass_flag:effective_code=cp.code;chain_code=cp.code
+    return {'sample_id':sample.id,'sequence':sample.sequence,'quantity':sample.quantity,'proof_code':effective_code,'chain_proof_code':chain_code,'original_proof_code':proof.code,'plate':sample.plate_snapshot,'net_paper':net_paper(s,j.id)}
 def sealed(s,jid):return int(s.scalar(select(func.coalesce(func.sum(PrintPack.sheets),0)).where(PrintPack.job_id==jid,PrintPack.state.in_(['sealed','shipped']))))
 
 def create_pack(s,b,u):
